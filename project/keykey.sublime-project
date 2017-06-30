@@ -1,0 +1,24 @@
+{
+    "folders":
+    [
+        {
+            "path": "../",
+            "name": "KeyKey",
+            "folder_exclude_patterns": ["project"],//, "thirdParty"],
+            "file_include_patterns": ["*.c", "*.cpp", "*.h", "*.hpp", "*.txt", "Jam*", "*.md", "*.py"]
+        },
+    ],
+    "build_systems":
+    [
+        // For galavant/, use
+        // "working_dir": "$project_path/../../.."
+        // Not sure why, but Sublime will actually keep going up across builds if you just do ../ first
+
+        // Misc. Commands
+        {
+            "name": "List",
+            "shell_cmd": "ls -l",
+            "working_dir": "$project_path"
+        },
+    ]
+}
