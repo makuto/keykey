@@ -1,78 +1,41 @@
 import mido
 import time
 import curses
+import midiDevice
 
-"""
-mido.get_input_names()
-mido.get_output_names()
-"""
-
-
-def testOutput():
-    outputs = mido.get_output_names()
-    lmmsOutPort = None
-    for output in outputs:
-        if 'LMMS'.lower() in output.lower():
-            lmmsOutPort = output
-
-    if not lmmsOutPort:
-        return
-
-    with mido.open_output(lmmsOutPort) as lmmsOut:
-        for i in range(1, 10):
-            song = [100, 80, 40, 80, 100]
-            for note in song:
-                testNote = mido.Message(
-                    'note_on', note=note, velocity=127, time=0.1)
-                lmmsOut.send(testNote)
-                testNote = mido.Message(
-                    'note_on', note=20, velocity=127, time=0.1)
-                lmmsOut.send(testNote)
-                time.sleep(0.1)
-                testNote = mido.Message('note_off', note=note,
-                                        velocity=127, time=0.2)
-                lmmsOut.send(testNote)
-                testNote = mido.Message(
-                    'note_off', note=20, velocity=127, time=0.2)
-                lmmsOut.send(testNote)
-                time.sleep(0.1)
+# If true, no console output will be shown (for performance)
+headless = False
 
 
-def chooseDevice(devices, searchString):
-    matchingDevice = None
-    for device in devices:
-        if searchString.lower() in device.lower():
-            matchingDevice = device
-    return matchingDevice
+def cursesRingPrint(stdscr, stringToPrint):
+    if not headless:
+        stdscr.addstr(stringToPrint)
+        stdscr.clrtoeol()
+
+        cursorPos = curses.getsyx()
+        newPos = [cursorPos[0] + 1, cursorPos[1]]
+        screenHeightWidth = stdscr.getmaxyx()
+        if newPos[0] > screenHeightWidth[0] - 1:
+            newPos[0] = 1
+
+        stdscr.move(newPos[0], newPos[1])
 
 
-def testIO():
-    # synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
-    synthOutPort = chooseDevice(mido.get_output_names(), 'OP-1')
-    keyboardInPort = chooseDevice(mido.get_input_names(), 'CH345')
-
-    if not synthOutPort or not keyboardInPort:
-        return
-
-    with mido.open_output(synthOutPort) as synthOut:
-        with mido.open_input(keyboardInPort) as keyboardIn:
-            while True:
-                message = keyboardIn.receive()
-                print(message)
-                synthOut.send(message)
-
-
-def simpleSequencer():
+def simpleSequencer(stdscr):
     debugTiming = False
 
-    # synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
-    synthOutPort = chooseDevice(mido.get_output_names(), 'OP-1')
-    keyboardInPort = chooseDevice(mido.get_input_names(), 'CH345')
+    if not headless:
+        # Make getch() nonblocking
+        stdscr.nodelay(1)
 
-    if not synthOutPort or not keyboardInPort:
-        return
+        stdscr.addstr("Current mode: Simple Sequencer", curses.A_REVERSE)
+        stdscr.move(1, 0)
+        stdscr.refresh()
 
-    with mido.open_output(synthOutPort) as synthOut, mido.open_input(keyboardInPort) as keyboardIn:
+    with midiDevice.openOut('OP-1') as synthOut, midiDevice.openIn('CH345') as keyboardIn:
+        if not synthOut or not keyboardIn:
+            return
+
         # 16th notes at 240 bpm should be fine
         frameRate = (60 / 240) / 4
         # Prevent the program from locking up if the frame rate gets too bad
@@ -92,10 +55,16 @@ def simpleSequencer():
         sequenceNumTimesPlayed = 0
         sequenceNumTimesMeasureDrift = 4
 
+        isRecording = False
+
         lastTime = time.time()
         timeAccumulated = 0.0
+        shouldQuit = False
         try:
             while True:
+                if not headless:
+                    stdscr.refresh()
+
                 currentTime = time.time()
                 sequenceTime = currentTime - sequenceLastStartTime
                 frameDelta = currentTime - lastTime
@@ -105,19 +74,34 @@ def simpleSequencer():
                 timeAccumulated += frameDelta
 
                 if debugTiming:
-                    print(frameDelta)
+                    cursesRingPrint(stdscr, str(frameDelta))
 
                 while timeAccumulated >= frameRate:
                     if debugTiming:
-                        print('Updated')
+                        cursesRingPrint(stdscr, 'Updated')
 
-                    # Poll input
+                    # Poll MIDI input
                     message = keyboardIn.poll()
                     while message:
-                        print(message)
-                        sequence.append((message, sequenceTime))
+                        cursesRingPrint(stdscr, str(message))
+
+                        if isRecording:
+                            sequence.append((message, sequenceTime))
                         synthOut.send(message)
+
                         message = keyboardIn.poll()
+
+                    # Poll keyboard input
+                    inputChar = stdscr.getch()
+                    if inputChar == ord('q'):
+                        shouldQuit = True
+                        break
+                    elif inputChar == ord('f'):
+                        cursesRingPrint(stdscr, "This is a test")
+                    elif inputChar == ord('r'):
+                        isRecording = not isRecording
+                        cursesRingPrint(
+                            stdscr, 'Recording' if isRecording else 'Stopped recording')
 
                     # Play sequencer notes if it's time
                     # TODO: sort notes by time, out messages work strangely
@@ -136,13 +120,13 @@ def simpleSequencer():
                     if sequenceTime >= sequenceTimeLength:
                         # TODO: Minimize drift over time
                         if sequenceNumTimesPlayed % sequenceNumTimesMeasureDrift == 0:
-                            print('Sequence played ' + str(sequenceNumTimesPlayed)
-                                  + ' times; drifted ' +
-                                  str((currentTime - sequenceFirstStartTime)
-                                      - (sequenceTimeLength * sequenceNumTimesPlayed)) + ', drifted '
-                                  + str((currentTime - sequenceDriftStartTime)
-                                        - (sequenceTimeLength * sequenceNumTimesMeasureDrift))
-                                  + ' this ' + str(sequenceNumTimesMeasureDrift) + ' drift frame')
+                            cursesRingPrint(stdscr, 'Sequence played ' + str(sequenceNumTimesPlayed)
+                                            + ' times; drifted ' +
+                                            str((currentTime - sequenceFirstStartTime)
+                                                - (sequenceTimeLength * sequenceNumTimesPlayed)) + ', drifted '
+                                            + str((currentTime - sequenceDriftStartTime)
+                                                  - (sequenceTimeLength * sequenceNumTimesMeasureDrift))
+                                            + ' this ' + str(sequenceNumTimesMeasureDrift) + ' drift frame')
                             sequenceDriftStartTime = currentTime
 
                         sequenceLastStartTime = currentTime
@@ -152,14 +136,19 @@ def simpleSequencer():
                     timeAccumulated -= frameRate
                     timeAccumulated = max(0.0, timeAccumulated)
 
+                if shouldQuit:
+                    break
+
                 sleepTime = frameRate - timeAccumulated - timeRoomForError
                 if sleepTime > 0:
                     if debugTiming:
-                        print('Sleep ' + str(sleepTime))
+                        cursesRingPrint(stdscr,
+                                        'Sleep ' + str(sleepTime))
                     time.sleep(sleepTime)
 
         finally:
-            print('Resetting synth due to exception')
+            cursesRingPrint(stdscr,
+                            'Resetting synth due to exception')
 
             synthOut.reset()
             """ Sometimes notes hang because a note_off has not been sent. To (abruptly) stop all sounding
@@ -168,9 +157,11 @@ def simpleSequencer():
                 This will not reset controllers. Unlike reset(), the notes will not be turned off
                  gracefully, but will stop immediately with no regard to decay time.
                 http://mido.readthedocs.io/en/latest/ports.html?highlight=reset """
-            # synthOut.panic()
+            synthOut.panic()
 
 # Note that key repeats mean that key holding is fucking weird
+
+
 def testKeyInput(stdscr):
     # Make getch() nonblocking
     stdscr.nodelay(1)
@@ -183,13 +174,12 @@ def testKeyInput(stdscr):
 
         time.sleep(0.05)
 
+
 def main():
-    # testOutput()
-    # testIO()
-    # Put in curses.wrapper so that the curses shit is cleaned up on close/exception
-    curses.wrapper(testKeyInput)
-    
-    #simpleSequencer()
+    if headless:
+        simpleSequencer(None)
+    else:
+        curses.wrapper(simpleSequencer)
 
 if __name__ == '__main__':
     main()
