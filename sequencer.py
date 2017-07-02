@@ -1,5 +1,6 @@
 import mido
 import time
+import curses
 
 """
 mido.get_input_names()
@@ -169,7 +170,26 @@ def simpleSequencer():
                 http://mido.readthedocs.io/en/latest/ports.html?highlight=reset """
             # synthOut.panic()
 
-if __name__ == '__main__':
+# Note that key repeats mean that key holding is fucking weird
+def testKeyInput(stdscr):
+    # Make getch() nonblocking
+    stdscr.nodelay(1)
+    while True:
+        inputChar = stdscr.getch()
+        if inputChar == ord('f'):
+            stdscr.addstr("This is a test")
+        elif inputChar == ord('q'):
+            break
+
+        time.sleep(0.05)
+
+def main():
     # testOutput()
     # testIO()
-    simpleSequencer()
+    # Put in curses.wrapper so that the curses shit is cleaned up on close/exception
+    curses.wrapper(testKeyInput)
+    
+    #simpleSequencer()
+
+if __name__ == '__main__':
+    main()
