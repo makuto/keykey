@@ -46,7 +46,7 @@ def chooseDevice(devices, searchString):
 
 
 def testIO():
-    #synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
+    # synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
     synthOutPort = chooseDevice(mido.get_output_names(), 'OP-1')
     keyboardInPort = chooseDevice(mido.get_input_names(), 'CH345')
 
@@ -62,7 +62,9 @@ def testIO():
 
 
 def simpleSequencer():
-    #synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
+    debugTiming = False
+
+    # synthOutPort = chooseDevice(mido.get_output_names(), 'LMMS')
     synthOutPort = chooseDevice(mido.get_output_names(), 'OP-1')
     keyboardInPort = chooseDevice(mido.get_input_names(), 'CH345')
 
@@ -74,11 +76,21 @@ def simpleSequencer():
         frameRate = (60 / 240) / 4
         # Prevent the program from locking up if the frame rate gets too bad
         maximumCatchupTime = 0.25
+
         timeRoomForError = 0.0001
-        sequence = []
+
+        # Start with a click
+        sequence = [(mido.Message(
+                    'note_on', note=60, velocity=64, time=0.0), 0.0), (mido.Message(
+                        'note_off', note=60, velocity=127, time=0.1), 0.1)]
         sequenceLastStartTime = 0.0
-        sequenceTimeLength = 1.0
+        sequenceTimeLength = 3.0
         sequenceLastNotePlayedTime = 0.0
+        sequenceFirstStartTime = 0.0
+        sequenceDriftStartTime = 0.0
+        sequenceNumTimesPlayed = 0
+        sequenceNumTimesMeasureDrift = 4
+
         lastTime = time.time()
         timeAccumulated = 0.0
         try:
@@ -91,10 +103,12 @@ def simpleSequencer():
                 lastTime = currentTime
                 timeAccumulated += frameDelta
 
-                print(frameDelta)
+                if debugTiming:
+                    print(frameDelta)
 
                 while timeAccumulated >= frameRate:
-                    print('Updated')
+                    if debugTiming:
+                        print('Updated')
 
                     # Poll input
                     message = keyboardIn.poll()
@@ -105,31 +119,55 @@ def simpleSequencer():
                         message = keyboardIn.poll()
 
                     # Play sequencer notes if it's time
-                    # TODO: sort notes by time
+                    # TODO: sort notes by time, out messages work strangely
                     for note in sequence:
                         # TODO: this comparison should have a margin of error equal
                         # to the frame rate
                         if note[1] <= sequenceTime and note[1] >= sequenceLastNotePlayedTime:
                             synthOut.send(note[0])
-                            sequenceLastNotePlayedTime = max(sequenceLastNotePlayedTime, note[1])
+                            sequenceLastNotePlayedTime = max(
+                                sequenceLastNotePlayedTime, note[1])
+
+                            if not sequenceFirstStartTime:
+                                sequenceFirstStartTime = currentTime
 
                     # Restart sequence if necessary
                     if sequenceTime >= sequenceTimeLength:
+                        # TODO: Minimize drift over time
+                        if sequenceNumTimesPlayed % sequenceNumTimesMeasureDrift == 0:
+                            print('Sequence played ' + str(sequenceNumTimesPlayed)
+                                  + ' times; drifted ' +
+                                  str((currentTime - sequenceFirstStartTime)
+                                      - (sequenceTimeLength * sequenceNumTimesPlayed)) + ', drifted '
+                                  + str((currentTime - sequenceDriftStartTime)
+                                        - (sequenceTimeLength * sequenceNumTimesMeasureDrift))
+                                  + ' this ' + str(sequenceNumTimesMeasureDrift) + ' drift frame')
+                            sequenceDriftStartTime = currentTime
+
                         sequenceLastStartTime = currentTime
                         sequenceLastNotePlayedTime = 0.0
+                        sequenceNumTimesPlayed += 1
 
                     timeAccumulated -= frameRate
                     timeAccumulated = max(0.0, timeAccumulated)
 
                 sleepTime = frameRate - timeAccumulated - timeRoomForError
                 if sleepTime > 0:
-                    print('Sleep ' + str(sleepTime))
+                    if debugTiming:
+                        print('Sleep ' + str(sleepTime))
                     time.sleep(sleepTime)
 
         finally:
             print('Resetting synth due to exception')
+
             synthOut.reset()
-            #synthOut.panic()
+            """ Sometimes notes hang because a note_off has not been sent. To (abruptly) stop all sounding
+                 notes, you can call:
+                    outport.panic()
+                This will not reset controllers. Unlike reset(), the notes will not be turned off
+                 gracefully, but will stop immediately with no regard to decay time.
+                http://mido.readthedocs.io/en/latest/ports.html?highlight=reset """
+            # synthOut.panic()
 
 if __name__ == '__main__':
     # testOutput()
