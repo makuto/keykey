@@ -2,6 +2,7 @@ import mido
 import time
 import curses
 import midiDevice
+import math
 
 # If true, no console output will be shown (for performance)
 headless = False
@@ -19,6 +20,15 @@ def cursesRingPrint(stdscr, stringToPrint):
             newPos[0] = 1
 
         stdscr.move(newPos[0], newPos[1])
+        stdscr.refresh()
+
+
+def manualNoteResetCH345(output):
+    ch345KeyboardRange = [53, 84]
+    for note in range(ch345KeyboardRange[0], ch345KeyboardRange[1] + 1):
+        noteOffMessage = mido.Message(
+            'note_on', note=note, velocity=0, time=0.0)
+        output.send(noteOffMessage)
 
 
 def simpleSequencer(stdscr):
@@ -28,7 +38,8 @@ def simpleSequencer(stdscr):
         # Make getch() nonblocking
         stdscr.nodelay(1)
 
-        stdscr.addstr("Current mode: Simple Sequencer", curses.A_REVERSE)
+        stdscr.addstr("KeyKey --- Current mode: Simple Sequencer",
+                      curses.A_REVERSE)
         stdscr.move(1, 0)
         stdscr.refresh()
 
@@ -48,7 +59,7 @@ def simpleSequencer(stdscr):
                     'note_on', note=60, velocity=64, time=0.0), 0.0), (mido.Message(
                         'note_off', note=60, velocity=127, time=0.1), 0.1)]
         sequenceLastStartTime = 0.0
-        sequenceTimeLength = 3.0
+        sequenceTimeLength = 1.0
         sequenceLastNotePlayedTime = 0.0
         sequenceFirstStartTime = 0.0
         sequenceDriftStartTime = 0.0
@@ -56,15 +67,13 @@ def simpleSequencer(stdscr):
         sequenceNumTimesMeasureDrift = 4
 
         isRecording = False
+        isPlayback = True
 
         lastTime = time.time()
         timeAccumulated = 0.0
         shouldQuit = False
         try:
             while True:
-                if not headless:
-                    stdscr.refresh()
-
                 currentTime = time.time()
                 sequenceTime = currentTime - sequenceLastStartTime
                 frameDelta = currentTime - lastTime
@@ -93,45 +102,76 @@ def simpleSequencer(stdscr):
 
                     # Poll keyboard input
                     inputChar = stdscr.getch()
+                    # [Q]uit
                     if inputChar == ord('q'):
                         shouldQuit = True
                         break
-                    elif inputChar == ord('f'):
-                        cursesRingPrint(stdscr, "This is a test")
+                    # Toggle [P]layback
+                    elif inputChar == ord('p'):
+                        isPlayback = not isPlayback
+                        cursesRingPrint(
+                            stdscr, 'Playback' if isPlayback else 'Stopped Playback')
+                        if not isPlayback:
+                            isRecording = False
+                    # [C]lear sequence
+                    elif inputChar == ord('c'):
+                        sequence = []
+                        cursesRingPrint(stdscr, "Cleared sequence")
+                    # [R]ecord
                     elif inputChar == ord('r'):
                         isRecording = not isRecording
-                        cursesRingPrint(
-                            stdscr, 'Recording' if isRecording else 'Stopped recording')
+                        if not isPlayback and isRecording:
+                            # TODO: keep the sequence looping and not play it?
+                            # Or restart seq on start play?
+                            cursesRingPrint(stdscr,
+                                            'Cannot record without playing back')
+                            isRecording = False
+                        else:
+                            cursesRingPrint(
+                                stdscr, 'Recording' if isRecording else 'Stopped recording')
+                    # Reset
+                    elif inputChar == ord('x'):
+                        synthOut.reset()
+                        synthOut.panic()
+                        manualNoteResetCH345(synthOut)
+                        cursesRingPrint(stdscr, "Reset output")
 
-                    # Play sequencer notes if it's time
-                    # TODO: sort notes by time, out messages work strangely
-                    for note in sequence:
-                        # TODO: this comparison should have a margin of error equal
-                        # to the frame rate
-                        if note[1] <= sequenceTime and note[1] >= sequenceLastNotePlayedTime:
-                            synthOut.send(note[0])
-                            sequenceLastNotePlayedTime = max(
-                                sequenceLastNotePlayedTime, note[1])
+                    if isPlayback:
+                        # Restart sequence if necessary
+                        if sequenceTime >= sequenceTimeLength - timeRoomForError:
+                            # TODO: Minimize drift over time
+                            if sequenceNumTimesPlayed and sequenceNumTimesPlayed % sequenceNumTimesMeasureDrift == 0:
+                                sequenceThisFrameDrift = (currentTime - sequenceDriftStartTime) - (
+                                    sequenceTimeLength * sequenceNumTimesMeasureDrift)
 
-                            if not sequenceFirstStartTime:
-                                sequenceFirstStartTime = currentTime
+                                cursesRingPrint(stdscr, 'Sequence played ' + str(sequenceNumTimesPlayed)
+                                                + ' times; drifted ' +
+                                                str((currentTime - sequenceFirstStartTime)
+                                                    - (sequenceTimeLength * sequenceNumTimesPlayed)) + ', drifted '
+                                                + (str(sequenceThisFrameDrift) if math.fabs(
+                                                    sequenceThisFrameDrift) > frameRate else ' -negligible- ')
+                                                + ' this ' + str(sequenceNumTimesMeasureDrift) + ' drift frame')
+                                cursesRingPrint(stdscr, '    (Started at ' + str(sequenceFirstStartTime) + ', last sequence start time ' + str(sequenceLastStartTime) + ', expected last start time ' + str(
+                                    sequenceFirstStartTime + (sequenceNumTimesPlayed * sequenceTimeLength)) + ', diff ' + str((sequenceFirstStartTime + (sequenceNumTimesPlayed * sequenceTimeLength)) - sequenceLastStartTime) + ')')
+                                sequenceDriftStartTime = currentTime
 
-                    # Restart sequence if necessary
-                    if sequenceTime >= sequenceTimeLength:
-                        # TODO: Minimize drift over time
-                        if sequenceNumTimesPlayed % sequenceNumTimesMeasureDrift == 0:
-                            cursesRingPrint(stdscr, 'Sequence played ' + str(sequenceNumTimesPlayed)
-                                            + ' times; drifted ' +
-                                            str((currentTime - sequenceFirstStartTime)
-                                                - (sequenceTimeLength * sequenceNumTimesPlayed)) + ', drifted '
-                                            + str((currentTime - sequenceDriftStartTime)
-                                                  - (sequenceTimeLength * sequenceNumTimesMeasureDrift))
-                                            + ' this ' + str(sequenceNumTimesMeasureDrift) + ' drift frame')
-                            sequenceDriftStartTime = currentTime
+                            sequenceLastStartTime = currentTime
+                            sequenceLastNotePlayedTime = 0.0
+                            sequenceNumTimesPlayed += 1
 
-                        sequenceLastStartTime = currentTime
-                        sequenceLastNotePlayedTime = 0.0
-                        sequenceNumTimesPlayed += 1
+                        # Play sequencer notes if it's time
+                        # TODO: sort notes by time? Also, out messages work
+                        # strangely
+                        for note in sequence:
+                            # TODO: this comparison should have a margin of error equal
+                            # to the frame rate
+                            if note[1] <= sequenceTime and note[1] >= sequenceLastNotePlayedTime:
+                                synthOut.send(note[0])
+                                sequenceLastNotePlayedTime = max(
+                                    sequenceLastNotePlayedTime, note[1])
+
+                                if not sequenceFirstStartTime:
+                                    sequenceFirstStartTime = currentTime
 
                     timeAccumulated -= frameRate
                     timeAccumulated = max(0.0, timeAccumulated)
@@ -141,6 +181,16 @@ def simpleSequencer(stdscr):
 
                 sleepTime = frameRate - timeAccumulated - timeRoomForError
                 if sleepTime > 0:
+                    if sequenceNumTimesPlayed:
+                        # Make sure we wake up and start the sequence at the right
+                        # time
+                        sequenceNextStartTime = sequenceLastStartTime + sequenceTimeLength
+                        if sleepTime + currentTime > sequenceNextStartTime:
+                            cursesRingPrint(stdscr, 'Instead of sleeping for ' + str(sleepTime) + ', sleep for ' +
+                                            str(sequenceNextStartTime - currentTime - timeRoomForError) + ' (sequence starts soon)')
+                            sleepTime = max(
+                                0.0, sequenceNextStartTime - currentTime - timeRoomForError)
+
                     if debugTiming:
                         cursesRingPrint(stdscr,
                                         'Sleep ' + str(sleepTime))
@@ -158,6 +208,7 @@ def simpleSequencer(stdscr):
                  gracefully, but will stop immediately with no regard to decay time.
                 http://mido.readthedocs.io/en/latest/ports.html?highlight=reset """
             synthOut.panic()
+            manualNoteResetCH345(synthOut)
 
 # Note that key repeats mean that key holding is fucking weird
 
